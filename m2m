@@ -1,0 +1,289 @@
+#!/bin/bash
+#######################################################
+# (c) Alexandr Orosciuc <oroshchuk@gmail.com>
+# For the full copyright and license information,
+# please view the LICENSE file that was distributed 
+# with this source code.
+#######################################################
+
+#################### CONFIGURATION  ###################
+############ Parameters to more than once #############
+# Start-up memory footprint (will extend as DBs grow).
+SIZE="512M"
+# List of custom databases always copied by default.
+COPYBYDEFAULT=("phpmyadmin")
+
+########## Parameters to change once or never #########
+# Mount point directory.
+MOUNTDIR="/var/ramfs"
+# These are the default MySQL settings. Change if needed.
+MYCNF="/etc/mysql/my.cnf"
+MYDB="/var/lib/mysql"
+MYSQLSTART="service mysql start"
+MYSQLSTOP="service mysql stop"
+# Path to Ubuntu's apparmor config for mysql.
+APPARMORFILE="/etc/apparmor.d/usr.sbin.mysqld"
+# User:group of the mysql data files. 
+MYSQLUG="mysql:mysql"
+############### END OF CONFIGURATION ##################
+#######################################################
+
+show_help() {
+  # Moves MySQL data files to ramfs.
+  cat <<MSG
+This script allows you to move MySQL database files to RAM to ensure
+quick access and minimal delay without query/data structure optimization.
+
+Use it carefully and only if you know what you are doing and have backups!
+
+USAGE
+  Move to RAM, restart the service:
+    SCRIPTNAME ramify "databaseName1,databaseName2[,databaseNameN]"
+  
+  Restore from RAM, restart the service:
+    SCRIPTNAME restore "databaseName1,databaseName2[,databaseNameN]"
+  
+  Flush RAM back to original place, without service restart:
+    SCRIPTNAME flush
+MSG
+}
+
+# Register on-shutdown and on-reboot handlers to ensure
+# RAM files are persisted before computer is turned off.
+configure_rc06_handlers() {
+  local rc0script="/etc/rc0.d/K99m2m"
+  local rc6script="/etc/rc6.d/K99m2m"
+  if [[ -f "$rc0script" || -f "$rc6script" ]]; then
+    return 1
+  fi
+
+  local log="/var/log/m2mrestore.log"
+  touch $log
+  local m2mscript=$(readlink -f $0)
+
+  local rc0="#!/bin/bash
+log_file=\"$log\"
+echo \"----------\" >> \$log_file
+date >> \$log_file
+$m2mscript restore >> \$log_file
+echo \"On-shutdown flush finished at \$(date)\" >> \$log_file"
+  echo "$rc0" > $rc0script
+  chmod +x $rc0script
+
+  local rc6="#!/bin/bash
+log_file=\"$log\"
+echo \"----------\" >> \$log_file
+date >> \$log_file
+$m2mscript restore >> \$log_file
+echo \"On-reboot flush finished at \$(date)\" >> \$log_file"
+  echo "$rc6" > $rc6script
+  chmod +x $rc6script
+
+  return 0
+}
+
+# Ensure Ubuntu's AppArmor is configured correctly.
+configure_apparmor() {
+  if [ -f $APPARMORFILE ]; then
+    local apparm_ok=$(grep "$MOUNTDIR" "$APPARMORFILE")
+    if [ -z "$apparm_ok" ]; then
+      sed -i '$d' $APPARMORFILE
+      echo -e \
+        "\n" \
+        " #CUSTOM SETTINGS FOR RAMFS-BASED STORAGE\n" \
+        " $MOUNTDIR/mysql/ r,\n" \
+        " $MOUNTDIR/mysql/*.pid rw,\n" \
+        " $MOUNTDIR/mysql/** rwk,\n" \
+        "}\n" >> $APPARMORFILE
+      service apparmor restart
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# Prepare mount point
+configure_mountpoint() {
+  if [ ! -d $MOUNTDIR ]; then
+    mkdir $MOUNTDIR
+    if [ $? = 0 ]; then
+      echo "Mount point $MOUNTDIR doesn't exist and was created."
+    fi
+  fi  
+}
+
+# Helper functions.
+in_array() {
+  local hay needle=$1
+  shift
+  for hay; do
+    [[ $hay == $needle ]] && return 0
+  done
+  return 1
+}
+
+# Mount ramfs.
+mountramfs() {
+  mount -t ramfs -o size=$SIZE ramfs $MOUNTDIR
+}
+
+# Moves MySQL data files to ramfs.
+ramify() {
+  mount_ok=$(mount | grep "$MOUNTDIR")
+  # Mount if not already mounted
+  if [ -z "$mount_ok" ]; then
+    mountramfs
+    $MYSQLSTOP
+
+    # Copy necessary databases only.
+    if [ ! -z $1 ]; then
+      declare -a dbs
+      IFS=',' read -a dbs <<< "$1"
+      # These are the critical files that are very desirable to be copied.
+      MYSQLSYSTEMFILES=("mysql" "performance_schema" "ibdata1" "ib_logfile0" "ib_logfile1")
+      local copylist=( "${MYSQLSYSTEMFILES[@]}" "${COPYBYDEFAULT[@]}" )
+      # Append proper directory path.
+      for i in "${!copylist[@]}"
+      do
+        copylist[$i]=$(printf "$MYDB/%s" ${copylist[$i]})
+      done
+
+      # UTF-8 replacement map for special chars in database name.
+      declare -A CMAP
+      CMAP=([.]='@002e' [-]='@002d' [ ]='@0020')
+
+      # Prepare the to-copy list.
+      for db in "${dbs[@]}"
+      do
+        local dbname=$db
+        for from in "${!CMAP[@]}"
+        do
+          dbname="${dbname//$from/${CMAP[$from]}}"
+        done
+        if [ -d "$MYDB/$dbname" ]; then
+          copylist=(${copylist[@]} "$MYDB/$dbname")
+        else
+          echo "Database '$db' not found in $MYDB."
+        fi
+      done
+
+      echo "MySQL is being moved to ramfs now."
+      local files=($MYDB/*)
+      mkdir "$MOUNTDIR/mysql"
+      cd "$MOUNTDIR/mysql"
+      for entry in "${files[@]}"
+      do
+        in_array $entry "${copylist[@]}"
+        if [ $? = 0 ]; then
+          echo "Copying '$entry' ..."
+          cp -R $entry $MOUNTDIR/mysql
+        else
+          local filename=$(basename "$entry")
+          filename="${filename%.*}"
+          ln -s $entry $filename
+          echo "Symlink '$filename' to '$entry' created."
+        fi
+      done    
+    else
+      echo "Copying all of the databases ..."        
+      cp -R $MYDB $MOUNTDIR
+    fi
+
+    chown -R $MYSQLUG $MOUNTDIR/mysql
+
+    # Re-configure mysql
+    sed -i '/datadir/ s|'$MYDB'|'$MOUNTDIR'/mysql|g' $MYCNF
+
+    $MYSQLSTART
+
+    echo "MySQL is now using ramfs."
+  else
+    echo "MySQL is already using ramfs."
+  fi
+}
+
+restore() {
+  # Check if mounted
+  mount_ok=$(mount | grep "$MOUNTDIR")
+  if [ ! -z "$mount_ok" ]; then
+    echo "ramfs is being flushed to disk now..."
+
+    files=($MOUNTDIR/mysql/*)
+    for entry in "${files[@]}"
+    do
+      if [ ! -L "$entry" ]; then
+        echo "Copying '$entry' ..."
+        cp -R $entry $MYDB
+      fi
+    done
+
+    # cp -R $MOUNTDIR/mysql/* $MYDB
+    chown -R $MYSQLUG $MYDB
+    echo "Flush done."
+
+    # Re-configure mysql
+    $MYSQLSTOP
+    sed -i '/datadir/ s|'$MOUNTDIR'/mysql|'$MYDB'|g' $MYCNF
+    $MYSQLSTART
+
+    # Unmount
+    umount ramfs
+
+    echo "MySQL restored."
+  else
+    echo "No ramfs mounted, nothing to restore."
+  fi
+}
+
+flush() {
+  # Check if mounted
+  mount_ok=$(mount | grep "$MOUNTDIR")
+  if [ ! -z "$mount_ok" ]; then
+    echo "ramfs is being flushed to disk now..."
+
+    files=($MOUNTDIR/mysql/*)
+    for entry in "${files[@]}"
+    do
+      if [ ! -L "$entry" ]; then
+        echo "Copying '$entry' ..."
+        cp -R $entry $MYDB
+      fi
+    done
+
+    chown -R $MYSQLUG $MYDB
+    echo "Flush done."
+  else
+    echo "No ramfs mounted, nothing to flush."
+  fi  
+}
+
+if configure_rc06_handlers; then
+  echo "/etc/rcX.d handlers registered successfully."
+fi
+
+if configure_apparmor; then
+  echo "AppArmor configured."
+fi
+
+configure_mountpoint
+
+# Default action.
+if [ -z $1 ]; then
+  op="ramify"
+else
+  op=$1
+fi
+
+if [ $op = "ramify" ]; then
+  ramify $2
+elif [ $op = "restore" ]; then
+  restore
+elif [ $op = "flush" ]; then
+  flush
+elif [ $op = "help" ]; then
+  show_help
+else
+  echo "Unknown operation."
+  echo
+  show_help
+fi
