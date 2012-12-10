@@ -9,8 +9,6 @@ Features:
 - automatically creates mount point, configures apparmor and on-shutdown/on-reboot scripts that will save RAM back to disk
 - possibility to periodically flush data back to disk (in order to protect from OS glitches)
 
-**Known issues: flush operation is dangerous when run while DB is accessed by clients! Fix is trivial (stop and then start MySQL) and will be available soon.**
-
 ## Pre-requisites
 
 MySQL must be configured using the following parameters in my.cnf (if you are using InnoDB):
