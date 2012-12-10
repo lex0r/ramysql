@@ -29,7 +29,6 @@ MYSQLUG="mysql:mysql"
 #######################################################
 
 show_help() {
-  # Moves MySQL data files to ramfs.
   cat <<MSG
 This script allows you to move MySQL database files to RAM to ensure
 quick access and minimal delay without query/data structure optimization.
@@ -41,8 +40,8 @@ USAGE
     SCRIPTNAME ramify "databaseName1,databaseName2[,databaseNameN]"
   
   Restore from RAM, restart the service:
-    SCRIPTNAME restore "databaseName1,databaseName2[,databaseNameN]"
-  
+    SCRIPTNAME restore
+    
   Flush RAM back to original place, without service restart:
     SCRIPTNAME flush
 MSG
@@ -133,6 +132,7 @@ ramify() {
   # Mount if not already mounted
   if [ -z "$mount_ok" ]; then
     mountramfs
+
     $MYSQLSTOP
 
     # Copy necessary databases only.
@@ -206,7 +206,7 @@ restore() {
   # Check if mounted
   mount_ok=$(mount | grep "$MOUNTDIR")
   if [ ! -z "$mount_ok" ]; then
-    echo "ramfs is being flushed to disk now..."
+    $MYSQLSTOP
 
     files=($MOUNTDIR/mysql/*)
     for entry in "${files[@]}"
@@ -222,16 +222,16 @@ restore() {
     echo "Flush done."
 
     # Re-configure mysql
-    $MYSQLSTOP
     sed -i '/datadir/ s|'$MOUNTDIR'/mysql|'$MYDB'|g' $MYCNF
-    $MYSQLSTART
 
     # Unmount
     umount ramfs
 
+    $MYSQLSTART
+
     echo "MySQL restored."
   else
-    echo "No ramfs mounted, nothing to restore."
+    echo "No ramfs is mounted, there is nothing to restore."
   fi
 }
 
@@ -239,7 +239,7 @@ flush() {
   # Check if mounted
   mount_ok=$(mount | grep "$MOUNTDIR")
   if [ ! -z "$mount_ok" ]; then
-    echo "ramfs is being flushed to disk now..."
+    $MYSQLSTOP
 
     files=($MOUNTDIR/mysql/*)
     for entry in "${files[@]}"
@@ -251,9 +251,12 @@ flush() {
     done
 
     chown -R $MYSQLUG $MYDB
+
+    $MYSQLSTART
+
     echo "Flush done."
   else
-    echo "No ramfs mounted, nothing to flush."
+    echo "No ramfs is mounted, there is nothing to flush."
   fi  
 }
 
