@@ -213,11 +213,18 @@ restore() {
     do
       if [ ! -L "$entry" ]; then
         echo "Copying '$entry' ..."
-        cp -R $entry $MYDB
+        if [ -f "$entry" ]; then
+          cp $entry $MYDB
+        elif [ -d "$entry" ]; then
+          dbn=`echo "$entry" | grep -oE [^/]+$`
+          touch -d '-2 sec' $MYDB/$dbn/timemarker
+          cp -R $entry $MYDB
+          # todo: redirect output or report deleted tables.
+          find $MYDB/$dbn -type f ! -newer $MYDB/$dbn/timemarker -delete
+        fi
       fi
     done
 
-    # cp -R $MOUNTDIR/mysql/* $MYDB
     chown -R $MYSQLUG $MYDB
     echo "Flush done."
 
@@ -260,6 +267,19 @@ flush() {
   fi  
 }
 
+# Default action.
+if [ -z $1 ]; then
+  op="ramify"
+else
+  op=$1
+fi
+
+# Am I root?
+if [[ "$(/usr/bin/whoami)" != 'root' && $op != "help" ]]; then
+  echo "Error: you should be root or use sudo to run this script"
+  exit 1
+fi
+
 if configure_rc06_handlers; then
   echo "/etc/rcX.d handlers registered successfully."
 fi
@@ -269,13 +289,6 @@ if configure_apparmor; then
 fi
 
 configure_mountpoint
-
-# Default action.
-if [ -z $1 ]; then
-  op="ramify"
-else
-  op=$1
-fi
 
 if [ $op = "ramify" ]; then
   ramify $2
