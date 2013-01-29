@@ -7,7 +7,7 @@ Utility script for Ubuntu/Linux that moves MySQL to ramfs.
 Features:
 - move all or certain MySQL databases to ramfs file system (and back to disk), i.e store them in memory (2-8 time performance improvement!)
 - automatically creates mount point, configures apparmor and on-shutdown/on-reboot scripts that will save RAM back to disk
-- possibility to periodically flush data back to disk (in order to protect from OS glitches)
+- possibility to manually flush data back to disk (in order to protect from OS glitches)
 
 ## Pre-requisites
 
@@ -42,5 +42,7 @@ m2m restore
 
 4. Flush (do not restore but only update disk-stored MySQL data)
 m2m flush
+Tip: you could set up a cron job to flush your data automatically. Current implementation, however, will simply
+drop any running operations without letting you choose if you are ok with the interruption for flush.
 
 _Notes: Database name is allowed to contain only letters, numbers, underscores, hyphens and dots._

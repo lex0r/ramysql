@@ -2,7 +2,7 @@
 #######################################################
 # (c) Alexandr Orosciuc <oroshchuk@gmail.com>
 # For the full copyright and license information,
-# please view the LICENSE file that was distributed 
+# please view the LICENSE file that was distributed
 # with this source code.
 #######################################################
 
@@ -23,7 +23,7 @@ MYSQLSTART="service mysql start"
 MYSQLSTOP="service mysql stop"
 # Path to Ubuntu's apparmor config for mysql.
 APPARMORFILE="/etc/apparmor.d/usr.sbin.mysqld"
-# User:group of the mysql data files. 
+# User:group of the mysql data files.
 MYSQLUG="mysql:mysql"
 ############### END OF CONFIGURATION ##################
 #######################################################
@@ -38,10 +38,10 @@ Use it carefully and only if you know what you are doing and have backups!
 USAGE
   Move to RAM, restart the service:
     SCRIPTNAME ramify "databaseName1,databaseName2[,databaseNameN]"
-  
+
   Restore from RAM, restart the service:
     SCRIPTNAME restore
-    
+
   Flush RAM back to original place, without service restart:
     SCRIPTNAME flush
 MSG
@@ -108,7 +108,7 @@ configure_mountpoint() {
     if [ $? = 0 ]; then
       echo "Mount point $MOUNTDIR doesn't exist and was created."
     fi
-  fi  
+  fi
 }
 
 # Helper functions.
@@ -124,6 +124,27 @@ in_array() {
 # Mount ramfs.
 mountramfs() {
   mount -t ramfs -o size=$SIZE ramfs $MOUNTDIR
+}
+
+# Synchronize data files
+filesync() {
+  files=($MOUNTDIR/mysql/*)
+  for entry in "${files[@]}"
+  do
+    if [ ! -L "$entry" ]; then
+      echo "Copying '$entry' ..."
+      if [ -f "$entry" ]; then
+        cp $entry $MYDB
+      elif [ -d "$entry" ]; then
+        dbn=`echo "$entry" | grep -oE [^/]+$`
+        touch -d '-2 sec' $MYDB/$dbn/timemarker
+        cp -R $entry $MYDB
+        # todo: redirect output or report deleted tables.
+        find $MYDB/$dbn -type f ! -newer $MYDB/$dbn/timemarker -delete
+      fi
+    fi
+  done
+  chown -R $MYSQLUG $MYDB
 }
 
 # Moves MySQL data files to ramfs.
@@ -183,9 +204,9 @@ ramify() {
           ln -s $entry $filename
           echo "Symlink '$filename' to '$entry' created."
         fi
-      done    
+      done
     else
-      echo "Copying all of the databases ..."        
+      echo "Copying all of the databases ..."
       cp -R $MYDB $MOUNTDIR
     fi
 
@@ -206,36 +227,17 @@ restore() {
   # Check if mounted
   mount_ok=$(mount | grep "$MOUNTDIR")
   if [ ! -z "$mount_ok" ]; then
+    # Save the files back to disk
     $MYSQLSTOP
-
-    files=($MOUNTDIR/mysql/*)
-    for entry in "${files[@]}"
-    do
-      if [ ! -L "$entry" ]; then
-        echo "Copying '$entry' ..."
-        if [ -f "$entry" ]; then
-          cp $entry $MYDB
-        elif [ -d "$entry" ]; then
-          dbn=`echo "$entry" | grep -oE [^/]+$`
-          touch -d '-2 sec' $MYDB/$dbn/timemarker
-          cp -R $entry $MYDB
-          # todo: redirect output or report deleted tables.
-          find $MYDB/$dbn -type f ! -newer $MYDB/$dbn/timemarker -delete
-        fi
-      fi
-    done
-
-    chown -R $MYSQLUG $MYDB
+    filesync
     echo "Flush done."
 
     # Re-configure mysql
     sed -i '/datadir/ s|'$MOUNTDIR'/mysql|'$MYDB'|g' $MYCNF
 
-    # Unmount
+    # Unmount and run
     umount ramfs
-
     $MYSQLSTART
-
     echo "MySQL restored."
   else
     echo "No ramfs is mounted, there is nothing to restore."
@@ -247,24 +249,12 @@ flush() {
   mount_ok=$(mount | grep "$MOUNTDIR")
   if [ ! -z "$mount_ok" ]; then
     $MYSQLSTOP
-
-    files=($MOUNTDIR/mysql/*)
-    for entry in "${files[@]}"
-    do
-      if [ ! -L "$entry" ]; then
-        echo "Copying '$entry' ..."
-        cp -R $entry $MYDB
-      fi
-    done
-
-    chown -R $MYSQLUG $MYDB
-
+    filesync
     $MYSQLSTART
-
     echo "Flush done."
   else
     echo "No ramfs is mounted, there is nothing to flush."
-  fi  
+  fi
 }
 
 # Default action.
@@ -280,17 +270,16 @@ if [[ "$(/usr/bin/whoami)" != 'root' && $op != "help" ]]; then
   exit 1
 fi
 
-if configure_rc06_handlers; then
-  echo "/etc/rcX.d handlers registered successfully."
-fi
-
-if configure_apparmor; then
-  echo "AppArmor configured."
-fi
-
-configure_mountpoint
-
 if [ $op = "ramify" ]; then
+  # Ensure the system is configured before first run
+  if configure_rc06_handlers; then
+    echo "/etc/rcX.d handlers registered successfully."
+  fi
+  if configure_apparmor; then
+    echo "AppArmor configured."
+  fi
+  configure_mountpoint  
+  
   ramify $2
 elif [ $op = "restore" ]; then
   restore
