@@ -10,7 +10,7 @@ Features:
 - possibility to manually flush data back to disk (in order to protect from OS glitches)
 
 ## Pre-requisites
-The main one: you **don't have a quick SSD**, but your good old HDD is way too slow... :)
+The main one: you **don't have a quick SSD**, and your good old HDD is way too slow...
 Otherwise, you don't actually need this utility because SSD speed is more or less comparable with RAM storage.
 
 MySQL must be configured using the following parameters in my.cnf (if you are using InnoDB):
